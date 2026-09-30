@@ -29,9 +29,14 @@ def destruction_bar(pct: int, *, width: int = 8) -> str:
 
 def _font(size: int) -> ImageFont.ImageFont:
     for name in (
+        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJKjp-Bold.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
         "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
         "/Library/Fonts/Arial Bold.ttf",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
     ):
         try:
             return ImageFont.truetype(name, size)
@@ -186,20 +191,21 @@ def battle_log_png(
     defenses: Sequence[LogHit],
     slots: int,
     season_trophies: int | None = None,
+    player_tag: str | None = None,
 ) -> bytes:
     """Clash-style Battle Log: Attacks | Defenses with fixed weekly slots."""
     slots = max(1, min(int(slots), 36))
     pad = 18
     gap = 14
     col_w = 430
-    header_h = 52
+    header_h = 78
     sub_h = 38
     row_h = 34
     row_gap = 5
     footer_h = 10
     w = pad * 2 + col_w * 2 + gap
     body_h = slots * (row_h + row_gap) - row_gap
-    h = pad + header_h + sub_h + 10 + body_h + footer_h + pad
+    h = pad + header_h + 8 + sub_h + 10 + body_h + footer_h + pad
 
     img = Image.new("RGB", (w, h), (48, 28, 58))
     _diamond_bg(img, (70, 40, 90))
@@ -209,31 +215,46 @@ def battle_log_png(
     draw.rounded_rectangle([6, 6, w - 7, h - 7], radius=16, outline=(120, 85, 55), width=4)
     draw.rounded_rectangle([12, 12, w - 13, h - 13], radius=12, outline=(90, 60, 40), width=2)
 
-    title_font = _font(26)
-    name_font = _font(16)
+    name_font = _font(28)
+    label_font = _font(15)
+    col_font = _font(16)
     row_font = _font(15)
     small_font = _font(14)
     empty_font = _font(14)
+    trophy_font = _font(26)
 
-    # Purple header bar
+    # Purple header — player name large on top
     hx0, hy0 = pad, pad
     hx1, hy1 = w - pad, pad + header_h
     draw.rounded_rectangle([hx0, hy0, hx1, hy1], radius=8, fill=(92, 48, 130))
-    draw.text((hx0 + 16, hy0 + 12), "CURRENT RANKED STANDINGS", fill=(255, 255, 255), font=title_font)
 
     atk_sum = sum(int(a.get("trophies") or 0) for a in attacks)
     def_sum = sum(int(d.get("trophies") or 0) for d in defenses)
     total = season_trophies if season_trophies is not None else (atk_sum + def_sum)
     total_txt = str(total)
-    tw = draw.textlength(total_txt, font=title_font)
-    _draw_trophy(draw, int(hx1 - 28 - tw - 22), hy0 + 14, 20)
-    draw.text((hx1 - 16 - tw, hy0 + 12), total_txt, fill=(255, 255, 255), font=title_font)
+    tw = draw.textlength(total_txt, font=trophy_font)
 
-    # Player name under header (left)
-    draw.text((hx0 + 16, hy1 + 2), player_name[:28], fill=(220, 200, 230), font=name_font)
+    # Trophy total (right)
+    _draw_trophy(draw, int(hx1 - 28 - tw - 24), hy0 + 26, 22)
+    draw.text((hx1 - 16 - tw, hy0 + 24), total_txt, fill=(255, 255, 255), font=trophy_font)
+
+    # Name room: leave space for trophy cluster
+    name_max_w = hx1 - hx0 - 16 - tw - 60
+    display_name = player_name or "Player"
+    # Truncate by measured width
+    while len(display_name) > 1 and draw.textlength(display_name, font=name_font) > name_max_w:
+        display_name = display_name[:-1]
+    if display_name != player_name and len(display_name) > 1:
+        display_name = display_name[:-1] + "…"
+
+    draw.text((hx0 + 16, hy0 + 10), display_name, fill=(255, 255, 255), font=name_font)
+    sub = "CURRENT RANKED STANDINGS"
+    if player_tag:
+        sub = f"{sub}  ·  {player_tag}"
+    draw.text((hx0 + 16, hy0 + 46), sub, fill=(210, 185, 230), font=label_font)
 
     # Column sub-headers
-    ay = hy1 + 22
+    ay = hy1 + 8
     left_x = pad
     right_x = pad + col_w + gap
 
@@ -243,20 +264,18 @@ def battle_log_png(
             _draw_sword(draw, x + 10, ay + 8)
         else:
             _draw_shield(draw, x + 8, ay + 6)
-        draw.text((x + 36, ay + 9), label, fill=(255, 255, 255), font=name_font)
+        draw.text((x + 36, ay + 9), label, fill=(255, 255, 255), font=col_font)
         net_txt = f"+{net}" if net >= 0 else str(net)
-        nw = draw.textlength(net_txt, font=name_font)
+        nw = draw.textlength(net_txt, font=col_font)
         _draw_trophy(draw, int(x + col_w - 22 - nw - 20), ay + 10, 16)
-        draw.text((x + col_w - 14 - nw, ay + 9), net_txt, fill=(255, 240, 200), font=name_font)
+        draw.text((x + col_w - 14 - nw, ay + 9), net_txt, fill=(255, 240, 200), font=col_font)
 
     _col_header(left_x, "Attacks", atk_sum, True)
     _col_header(right_x, "Defenses", def_sum, False)
 
     def _row(x: int, y: int, hit: LogHit | None, empty_label: str) -> None:
-        # Beige translucent row
         draw.rounded_rectangle([x, y, x + col_w, y + row_h], radius=5, fill=(198, 186, 176))
         if hit is None:
-            # info pip
             draw.ellipse([x + 10, y + 9, x + 24, y + 23], fill=(70, 140, 210))
             draw.text((x + 14, y + 8), "i", fill=(255, 255, 255), font=small_font)
             draw.text((x + 32, y + 8), empty_label, fill=(70, 70, 80), font=empty_font)
@@ -274,7 +293,6 @@ def battle_log_png(
 
         pct_txt = f"{pct}%"
         pw = draw.textlength(pct_txt, font=small_font)
-        # stars then % then trophies on the right
         cups_txt = f"+{cups}" if cups >= 0 else str(cups)
         cw = draw.textlength(cups_txt, font=small_font)
         tx = x + col_w - 12 - cw

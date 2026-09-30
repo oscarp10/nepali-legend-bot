@@ -548,6 +548,7 @@ class LegendBot(commands.Bot):
             defenses=defenses,
             slots=slots,
             season_trophies=season_cups if player.season_active else 0,
+            player_tag=player.tag,
         )
         filename = f"battlelog_{player.tag.lstrip('#')}.png"
         file = discord.File(BytesIO(png), filename=filename)
@@ -564,9 +565,18 @@ class LegendBot(commands.Bot):
 
         try:
             if message:
-                await message.edit(content=None, embed=None, attachments=[file], view=view)
+                await message.edit(
+                    content=f"**{player.name}**",
+                    embed=None,
+                    attachments=[file],
+                    view=view,
+                )
             else:
-                message = await channel.send(file=file, view=view)
+                message = await channel.send(
+                    content=f"**{player.name}**",
+                    file=file,
+                    view=view,
+                )
                 await self.db.set_meta(meta_key, str(message.id))
         except discord.HTTPException as exc:
             log.warning("Failed player log for %s: %s", player.tag, exc)
