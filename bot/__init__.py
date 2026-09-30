@@ -1,0 +1,1 @@
+"""Nepali Legend Ranked Tracker bot."""

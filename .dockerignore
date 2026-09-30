@@ -1,0 +1,17 @@
+.venv
+venv
+__pycache__
+*.pyc
+.git
+.gitignore
+.DS_Store
+data
+*.db
+.env
+*.md
+scripts
+run.sh
+start.sh
+stop.sh
+.cursor
+**/.DS_Store

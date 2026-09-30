@@ -1,0 +1,27 @@
+# Optional local run with hard resource caps.
+# For 24/7 (laptop closed): deploy to Railway instead — see README.
+services:
+  bot:
+    build: .
+    container_name: nepali-legend-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      # Slightly slower poll = less CPU/API load
+      POLL_INTERVAL: ${POLL_INTERVAL:-90}
+    volumes:
+      - legend-data:/data
+    # Keep laptop impact tiny if you ever run this locally
+    cpus: 0.25
+    mem_limit: 192m
+    memswap_limit: 192m
+    pids_limit: 64
+    logging:
+      driver: json-file
+      options:
+        max-size: "2m"
+        max-file: "2"
+
+volumes:
+  legend-data:
