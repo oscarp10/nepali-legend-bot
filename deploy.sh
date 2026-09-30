@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy Nepali Legend Tracker to Railway (runs in the cloud — laptop can sleep).
+# Deploy Nepali Legend Tracker to Railway (cloud — laptop can sleep).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -8,8 +8,7 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
-RAILWAY="$(pwd)/node_modules/.bin/railway"
-if [[ ! -x "$RAILWAY" ]]; then
+if [[ ! -x ./node_modules/.bin/railway ]]; then
   echo "Installing Railway CLI locally…"
   npm install --prefix . @railway/cli
 fi
@@ -17,22 +16,32 @@ export PATH="$(pwd)/node_modules/.bin:$PATH"
 RAILWAY="$(command -v railway)"
 
 if ! "$RAILWAY" whoami >/dev/null 2>&1; then
-  echo ""
-  echo "Open the browser window to log into Railway, then re-run: ./deploy.sh"
-  echo "(Or set RAILWAY_TOKEN from https://railway.app/account/tokens )"
+  echo "Open the browser to sign in to Railway, then re-run ./deploy.sh"
+  echo "Or set RAILWAY_TOKEN from https://railway.app/account/tokens"
   "$RAILWAY" login
 fi
 
-# Create project/service on first run
-if [[ ! -f .railway-linked ]]; then
+if ! "$RAILWAY" status >/dev/null 2>&1; then
   echo "Creating Railway project…"
-  "$RAILWAY" init --name nepali-legend-bot || true
-  touch .railway-linked
+  "$RAILWAY" init --name nepali-legend-bot
 fi
 
-echo "Pushing env vars from .env…"
-# shellcheck disable=SC1091
+# Ensure a service exists
+if ! "$RAILWAY" service status >/dev/null 2>&1; then
+  echo "Creating bot service…"
+  "$RAILWAY" add --service bot --json >/dev/null
+  "$RAILWAY" service link bot || true
+fi
+
+# Ensure /data volume
+if ! "$RAILWAY" volume list --json 2>/dev/null | grep -q '"mountPath": "/data"'; then
+  echo "Adding /data volume…"
+  "$RAILWAY" volume add --mount-path /data --json >/dev/null || true
+fi
+
+echo "Syncing env vars from .env…"
 set -a
+# shellcheck disable=SC1091
 source .env
 set +a
 
@@ -47,12 +56,10 @@ set +a
   --set "POLL_INTERVAL=${POLL_INTERVAL:-90}" \
   --set "DATA_DIR=/data"
 
-echo "Deploying (build happens in Railway’s cloud)…"
-"$RAILWAY" up --detach
+echo "Deploying (build runs in Railway’s cloud)…"
+"$RAILWAY" up --detach -y
 
 echo ""
-echo "Done. Attach a volume at /data in the Railway dashboard so tracker.db persists:"
-echo "  https://railway.app → project → service → Volumes → Mount path /data"
-echo ""
-echo "Then stop the local bot so your laptop is free:"
-echo "  ./stop.sh"
+echo "Live: https://railway.com/project/46e936de-295d-490e-b40a-f502e78edb74"
+echo "Logs: railway logs"
+echo "Local bot should stay stopped: ./stop.sh"
