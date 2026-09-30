@@ -582,9 +582,10 @@ class LegendBot(commands.Bot):
 
         day = legend_day_key()
         if player.season_active:
-            day_battles = await self.db.list_day_battles(player.tag, day)
-            attacks = [b for b in day_battles if b.is_attack]
-            defenses = [b for b in day_battles if not b.is_attack]
+            # Full log on one card — not split by legend day
+            all_battles = await self.db.list_player_battles(player.tag, limit=80)
+            attacks = [b for b in all_battles if b.is_attack]
+            defenses = [b for b in all_battles if not b.is_attack]
         else:
             attacks = []
             defenses = []

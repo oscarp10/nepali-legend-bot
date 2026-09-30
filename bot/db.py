@@ -312,6 +312,21 @@ class Database:
         )
         await self.db.commit()
 
+    def _battle_from_row(self, r: aiosqlite.Row) -> BattleRow:
+        keys = set(r.keys())
+        return BattleRow(
+            battle_id=r["battle_id"],
+            player_tag=r["player_tag"],
+            battle_timestamp=r["battle_timestamp"],
+            is_attack=bool(r["is_attack"]),
+            stars=int(r["stars"] or 0),
+            destruction=int(r["destruction"] or 0),
+            opponent_name=r["opponent_name"] or "Unknown",
+            day_key=r["day_key"],
+            opponent_tag=r["opponent_tag"] if "opponent_tag" in keys else None,
+            opponent_th=r["opponent_th"] if "opponent_th" in keys else None,
+        )
+
     async def list_day_battles(self, player_tag: str, day_key: str) -> list[BattleRow]:
         cur = await self.db.execute(
             """
@@ -322,24 +337,24 @@ class Database:
             (player_tag, day_key),
         )
         rows = await cur.fetchall()
-        out: list[BattleRow] = []
-        for r in rows:
-            keys = set(r.keys())
-            out.append(
-                BattleRow(
-                    battle_id=r["battle_id"],
-                    player_tag=r["player_tag"],
-                    battle_timestamp=r["battle_timestamp"],
-                    is_attack=bool(r["is_attack"]),
-                    stars=int(r["stars"] or 0),
-                    destruction=int(r["destruction"] or 0),
-                    opponent_name=r["opponent_name"] or "Unknown",
-                    day_key=r["day_key"],
-                    opponent_tag=r["opponent_tag"] if "opponent_tag" in keys else None,
-                    opponent_th=r["opponent_th"] if "opponent_th" in keys else None,
-                )
-            )
-        return out
+        return [self._battle_from_row(r) for r in rows]
+
+    async def list_player_battles(
+        self, player_tag: str, *, limit: int = 80
+    ) -> list[BattleRow]:
+        """All stored attacks/defenses for a player (newest last), not split by day."""
+        cur = await self.db.execute(
+            """
+            SELECT * FROM seen_battles
+            WHERE player_tag = ?
+            ORDER BY battle_timestamp DESC
+            LIMIT ?
+            """,
+            (player_tag, limit),
+        )
+        rows = await cur.fetchall()
+        # Return chronological (oldest → newest) for display
+        return [self._battle_from_row(r) for r in reversed(rows)]
 
     async def get_meta(self, key: str) -> str | None:
         cur = await self.db.execute("SELECT value FROM meta WHERE key = ?", (key,))
