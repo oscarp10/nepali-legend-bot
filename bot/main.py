@@ -14,14 +14,11 @@ from bot.coc_client import CocClient
 from bot.config import Settings, load_settings
 from bot.db import Database, legend_day_key, player_log_meta_key
 from bot.embeds import (
-    battle_log_embed,
-    board_embed,
     day_digest_embed,
-    hit_embed,
     player_snapshot_embed,
-    ranked_hub_embed,
+    slots_for_tier,
 )
-from bot.graphics import board_banner_png
+from bot.graphics import battle_log_png
 from bot.tracker import Tracker
 
 os.environ.setdefault("SSL_CERT_FILE", certifi.where())
@@ -68,8 +65,6 @@ class LegendBot(commands.Bot):
         self.coc = CocClient(settings.coc_api_base, settings.coc_api_key)
         self.tracker = Tracker(settings, self.coc, self.db)
         self._channel_cache: dict[str, discord.TextChannel] = {}
-        self._boards_ready = False
-        self._hub_ready = False
         self._last_day_key = legend_day_key()
         self._ready_for_poll = False
 
@@ -310,13 +305,7 @@ class LegendBot(commands.Bot):
             return
         await self._ensure_channels(guild)
         await self._purge_spam_once()
-        # Hub → board → one card per player (trophy order)
-        if not self._hub_ready:
-            await self._ensure_ranked_hub()
-            self._hub_ready = True
-        if not self._boards_ready:
-            await self._refresh_boards({"legend", "electro"})
-            self._boards_ready = True
+        # Only player Battle Log cards (no hub / day board)
         day = legend_day_key()
         for bucket in ("legend", "electro"):
             players = await self.db.list_bucket(bucket, day)
@@ -327,7 +316,7 @@ class LegendBot(commands.Bot):
             )
             for player in players:
                 await self._publish_player_log(player)
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(1.1)
         await self._cleanup_pin_notices()
         self._ready_for_poll = True
         log.info("Rebuild finished — polls enabled")
@@ -366,11 +355,11 @@ class LegendBot(commands.Bot):
                 pass
 
     async def _purge_spam_once(self) -> None:
-        """Wipe ranked channels once, then rebuild hub + board + one card/player."""
-        flag = await self.db.get_meta("single_card_mode_v3")
+        """Wipe ranked channels once, then rebuild CoC-style player cards only."""
+        flag = await self.db.get_meta("coc_battlelog_cards_v1")
         if flag == "done":
             return
-        log.info("Purging ranked channels for single-card mode…")
+        log.info("Purging ranked channels for CoC battle-log cards…")
         for bucket in ("legend", "electro"):
             channel = self.channel_for(bucket)
             if not channel:
@@ -378,7 +367,7 @@ class LegendBot(commands.Bot):
             try:
                 async for pinned in channel.pins():
                     try:
-                        await pinned.unpin(reason="Single-card rebuild")
+                        await pinned.unpin(reason="Battle log rebuild")
                     except discord.HTTPException:
                         pass
             except discord.HTTPException:
@@ -428,10 +417,8 @@ class LegendBot(commands.Bot):
         await self.db.delete_meta_prefix("player_log_")
         await self.db.delete_meta_prefix("board_message_")
         await self.db.delete_meta_prefix("ranked_hub_")
-        await self.db.set_meta("single_card_mode_v3", "done")
-        self._boards_ready = False
-        self._hub_ready = False
-        log.info("Single-card purge complete — rebuilding…")
+        await self.db.set_meta("coc_battlelog_cards_v1", "done")
+        log.info("Purge complete — rebuilding player cards…")
     async def _ensure_channels(self, guild: discord.Guild) -> None:
         legend = None
         electro = None
@@ -482,25 +469,20 @@ class LegendBot(commands.Bot):
     def log_view(self, player_tag: str) -> RefreshLogView:
         return RefreshLogView(player_tag)
 
-    async def _ensure_ranked_hub(self) -> None:
-        for bucket in ("legend", "electro"):
-            channel = self.channel_for(bucket)
-            if not channel:
-                continue
-            meta_key = f"ranked_hub_{bucket}"
-            msg_id = await self.db.get_meta(meta_key)
-            if msg_id:
-                try:
-                    await channel.fetch_message(int(msg_id))
-                    continue
-                except (discord.NotFound, discord.HTTPException):
-                    pass
-            try:
-                msg = await channel.send(embed=ranked_hub_embed())
-                await self.db.set_meta(meta_key, str(msg.id))
-                await self._pin_quiet(msg, reason="Ranked Hub")
-            except discord.HTTPException as exc:
-                log.warning("Hub post failed in %s: %s", bucket, exc)
+    @staticmethod
+    def _hits_from_logs(logs: list[dict]) -> list[dict]:
+        ordered = sorted(logs, key=lambda x: x.get("creationTime") or "")
+        out: list[dict] = []
+        for item in ordered:
+            out.append(
+                {
+                    "name": item.get("opponentName") or "Unknown",
+                    "stars": int(item.get("stars") or 0),
+                    "destruction": int(item.get("destructionPercentage") or 0),
+                    "trophies": int(item.get("trophies") or 0),
+                }
+            )
+        return out
 
     async def _post_hit(self, event) -> None:
         # Intentionally no channel spam — hits only update the player's live card.
@@ -514,91 +496,61 @@ class LegendBot(commands.Bot):
         self._last_day_key = day
         await self.db.set_meta("last_legend_day", day)
         log.info("Legend day rolled %s → %s", prev, day)
-        # Refresh boards only (no extra announcement posts)
-        await self._refresh_boards({"legend", "electro"})
-
-    async def _refresh_boards(self, buckets: set[str]) -> None:
-        day = legend_day_key()
-        for bucket in buckets:
-            channel = self.channel_for(bucket)
-            if not channel:
-                continue
-            players = await self.db.list_bucket(bucket, day)
-            embed = board_embed(
-                bucket=bucket,
-                players=players,
-                clan_tag=self.settings.clan_tag,
-                day_key=day,
-            )
-
-            active = [p for p in players if p.season_active]
-            podium = [
-                (p.name, p.day_net)
-                for p in sorted(active, key=lambda x: x.day_net, reverse=True)[:3]
-            ]
-            title = "Legend Day" if bucket == "legend" else "Electro Day"
-            accent = (201, 162, 39) if bucket == "legend" else (142, 68, 173)
-            banner = board_banner_png(
-                title=title,
-                clan_tag=self.settings.clan_tag,
-                day_key=day,
-                podium=podium,
-                accent=accent,
-            )
-            file = discord.File(BytesIO(banner), filename=f"{bucket}_day.png")
-            embed.set_image(url=f"attachment://{bucket}_day.png")
-
-            meta_key = f"board_message_{bucket}"
-            msg_id = await self.db.get_meta(meta_key)
-            message = None
-            if msg_id:
-                try:
-                    message = await channel.fetch_message(int(msg_id))
-                except (discord.NotFound, discord.HTTPException):
-                    message = None
-
-            try:
-                if message:
-                    await message.edit(embed=embed, attachments=[file])
-                else:
-                    message = await channel.send(embed=embed, file=file)
-                    await self.db.set_meta(meta_key, str(message.id))
-                    await self._pin_quiet(message, reason="Live ranked day board")
-            except discord.HTTPException as exc:
-                log.warning("Failed to update %s board: %s", bucket, exc)
-
-            # Channel topic
-            try:
-                await channel.edit(
-                    topic=f"{title} {day} · {len(players)} tracked · /day for digest"
-                )
-            except discord.HTTPException:
-                pass
 
     async def _publish_player_log(self, player) -> None:
         channel = self.channel_for(player.track_bucket)
         if not channel:
             return
 
-        day = legend_day_key()
-        if player.season_active:
-            # Full log on one card — not split by legend day
-            all_battles = await self.db.list_player_battles(player.tag, limit=80)
-            attacks = [b for b in all_battles if b.is_attack]
-            defenses = [b for b in all_battles if not b.is_attack]
-        else:
-            attacks = []
-            defenses = []
+        slots = slots_for_tier(player.tier_name)
+        attacks: list[dict] = []
+        defenses: list[dict] = []
+        season_cups = player.trophies if player.season_active else None
 
-        embed = battle_log_embed(
-            player=player,
+        if player.season_active and player.group_tag and player.season_id:
+            try:
+                snap = await self.coc.leaguegroup_snapshot(
+                    player.group_tag, player.season_id, player.tag
+                )
+                attacks = self._hits_from_logs(list(snap.get("attack_logs") or []))
+                defenses = self._hits_from_logs(list(snap.get("defense_logs") or []))
+                if snap.get("trophies") is not None:
+                    season_cups = int(snap["trophies"])
+            except Exception:
+                log.exception("Leaguegroup log fetch failed for %s", player.tag)
+
+        if player.season_active and not attacks and not defenses:
+            all_battles = await self.db.list_player_battles(player.tag, limit=80)
+            attacks = [
+                {
+                    "name": b.opponent_name,
+                    "stars": b.stars,
+                    "destruction": b.destruction,
+                    "trophies": 0,
+                }
+                for b in all_battles
+                if b.is_attack
+            ]
+            defenses = [
+                {
+                    "name": b.opponent_name,
+                    "stars": b.stars,
+                    "destruction": b.destruction,
+                    "trophies": 0,
+                }
+                for b in all_battles
+                if not b.is_attack
+            ]
+
+        png = battle_log_png(
+            player_name=player.name,
             attacks=attacks,
             defenses=defenses,
-            day_key=day,
-            offense_net=player.day_offense_net,
-            defense_net=player.day_defense_net,
-            badge_url=player.badge_url,
+            slots=slots,
+            season_trophies=season_cups if player.season_active else 0,
         )
+        filename = f"battlelog_{player.tag.lstrip('#')}.png"
+        file = discord.File(BytesIO(png), filename=filename)
         view = self.log_view(player.tag)
 
         meta_key = player_log_meta_key(player.tag)
@@ -612,9 +564,9 @@ class LegendBot(commands.Bot):
 
         try:
             if message:
-                await message.edit(embed=embed, view=view)
+                await message.edit(content=None, embed=None, attachments=[file], view=view)
             else:
-                message = await channel.send(embed=embed, view=view)
+                message = await channel.send(file=file, view=view)
                 await self.db.set_meta(meta_key, str(message.id))
         except discord.HTTPException as exc:
             log.warning("Failed player log for %s: %s", player.tag, exc)
@@ -654,10 +606,6 @@ class LegendBot(commands.Bot):
             return
 
         await self._maybe_day_reset(result.players)
-
-        # Hits only update the live player card (no new messages)
-        if result.buckets_changed:
-            await self._refresh_boards(result.buckets_changed)
 
         if result.players:
             await self._refresh_player_logs(result.players)
