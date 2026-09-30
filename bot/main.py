@@ -1,16 +1,27 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from io import BytesIO
 
 import certifi
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 
 from bot.coc_client import CocClient
 from bot.config import Settings, load_settings
 from bot.db import Database, legend_day_key, player_log_meta_key
-from bot.embeds import battle_log_embed, board_embed, hit_embed
+from bot.embeds import (
+    battle_log_embed,
+    board_embed,
+    day_digest_embed,
+    hit_embed,
+    player_snapshot_embed,
+    ranked_hub_embed,
+)
+from bot.graphics import board_banner_png
 from bot.tracker import Tracker
 
 os.environ.setdefault("SSL_CERT_FILE", certifi.where())
@@ -27,9 +38,14 @@ ELECTRO_CHANNEL_NAME = "electro-feed"
 REFRESH_PREFIX = "nl:refresh:"
 
 
-class RefreshLogView(discord.ui.View):
-    """Attach a Refresh button; clicks are handled in on_interaction."""
+def _norm_tag(tag: str) -> str:
+    tag = tag.strip().upper()
+    if not tag.startswith("#"):
+        tag = f"#{tag}"
+    return tag
 
+
+class RefreshLogView(discord.ui.View):
     def __init__(self, player_tag: str) -> None:
         super().__init__(timeout=None)
         self.add_item(
@@ -53,12 +69,213 @@ class LegendBot(commands.Bot):
         self.tracker = Tracker(settings, self.coc, self.db)
         self._channel_cache: dict[str, discord.TextChannel] = {}
         self._boards_ready = False
+        self._hub_ready = False
+        self._last_day_key = legend_day_key()
 
     async def setup_hook(self) -> None:
         await self.db.connect()
         await self.coc.start()
+        self._register_commands()
+        try:
+            synced = await self.tree.sync(guild=discord.Object(id=self.settings.guild_id))
+            log.info("Synced %s slash commands", len(synced))
+        except Exception:
+            log.exception("Slash sync failed")
         self.poll_loop.change_interval(seconds=self.settings.poll_interval)
         self.poll_loop.start()
+
+    def _register_commands(self) -> None:
+        guild = discord.Object(id=self.settings.guild_id)
+
+        @self.tree.command(name="player", description="Look up a Clash player", guild=guild)
+        @app_commands.describe(tag="Player tag like #ABC123")
+        async def player_cmd(interaction: discord.Interaction, tag: str) -> None:
+            await interaction.response.defer(ephemeral=True)
+            try:
+                m = await self.coc.player(_norm_tag(tag))
+                stored = await self.db.get_player(m.tag)
+                snap = None
+                rank = None
+                if m.group_tag and m.season_id:
+                    snap = await self.coc.leaguegroup_snapshot(
+                        m.group_tag, m.season_id, m.tag
+                    )
+                    rank = snap.get("rank")
+                embed = player_snapshot_embed(
+                    name=m.name,
+                    tag=m.tag,
+                    th=m.town_hall,
+                    trophies=m.trophies,
+                    tier=m.tier_name,
+                    league=m.league_name,
+                    rank=rank,
+                    day_net=stored.day_net if stored else None,
+                    badge_url=m.badge_url,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except Exception as exc:
+                await interaction.followup.send(f"Lookup failed: {exc}", ephemeral=True)
+
+        @self.tree.command(name="clan", description="Clan snapshot", guild=guild)
+        async def clan_cmd(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True)
+            try:
+                data = await self.coc.clan(self.settings.clan_tag)
+                badge = (data.get("badgeUrls") or {}).get("medium")
+                embed = discord.Embed(
+                    title=f"🏰 {data.get('name')}",
+                    description=(data.get("description") or "")[:400] or "_No description_",
+                    color=0xC9A227,
+                )
+                embed.add_field(name="Tag", value=f"`{data.get('tag')}`", inline=True)
+                embed.add_field(
+                    name="Members",
+                    value=str(data.get("members") or data.get("memberList") and len(data["memberList"]) or "?"),
+                    inline=True,
+                )
+                embed.add_field(
+                    name="War wins",
+                    value=str(data.get("warWins") or 0),
+                    inline=True,
+                )
+                embed.add_field(
+                    name="Level",
+                    value=str(data.get("clanLevel") or "?"),
+                    inline=True,
+                )
+                if badge:
+                    embed.set_thumbnail(url=badge)
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except Exception as exc:
+                await interaction.followup.send(f"Clan lookup failed: {exc}", ephemeral=True)
+
+        @self.tree.command(name="day", description="Today's ranked digest", guild=guild)
+        @app_commands.describe(bracket="legend or electro")
+        @app_commands.choices(
+            bracket=[
+                app_commands.Choice(name="Legend", value="legend"),
+                app_commands.Choice(name="Electro", value="electro"),
+            ]
+        )
+        async def day_cmd(
+            interaction: discord.Interaction,
+            bracket: app_commands.Choice[str] | None = None,
+        ) -> None:
+            await interaction.response.defer(ephemeral=True)
+            day = legend_day_key()
+            bucket = bracket.value if bracket else "legend"
+            players = await self.db.list_bucket(bucket, day)
+            await interaction.followup.send(
+                embed=day_digest_embed(bucket=bucket, players=players, day_key=day),
+                ephemeral=True,
+            )
+
+        @self.tree.command(name="link", description="Link your Discord to a CoC tag", guild=guild)
+        @app_commands.describe(tag="Your player tag")
+        async def link_cmd(interaction: discord.Interaction, tag: str) -> None:
+            await interaction.response.defer(ephemeral=True)
+            try:
+                m = await self.coc.player(_norm_tag(tag))
+                await self.db.set_discord_link(interaction.user.id, m.tag)
+                await interaction.followup.send(
+                    f"Linked to **{m.name}** `{m.tag}`. Use `/me` anytime.",
+                    ephemeral=True,
+                )
+            except Exception as exc:
+                await interaction.followup.send(f"Link failed: {exc}", ephemeral=True)
+
+        @self.tree.command(name="me", description="Your linked player snapshot", guild=guild)
+        async def me_cmd(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True)
+            tag = await self.db.get_discord_link(interaction.user.id)
+            if not tag:
+                await interaction.followup.send(
+                    "No link yet — use `/link #YOURTAG`.", ephemeral=True
+                )
+                return
+            try:
+                m = await self.coc.player(tag)
+                stored = await self.db.get_player(m.tag)
+                rank = None
+                if m.group_tag and m.season_id:
+                    snap = await self.coc.leaguegroup_snapshot(
+                        m.group_tag, m.season_id, m.tag
+                    )
+                    rank = snap.get("rank")
+                embed = player_snapshot_embed(
+                    name=m.name,
+                    tag=m.tag,
+                    th=m.town_hall,
+                    trophies=m.trophies,
+                    tier=m.tier_name,
+                    league=m.league_name,
+                    rank=rank,
+                    day_net=stored.day_net if stored else None,
+                    badge_url=m.badge_url,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except Exception as exc:
+                await interaction.followup.send(f"Failed: {exc}", ephemeral=True)
+
+        @self.tree.command(name="war", description="Current clan war snapshot", guild=guild)
+        async def war_cmd(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True)
+            try:
+                war = await self.coc.current_war(self.settings.clan_tag)
+                if not war:
+                    await interaction.followup.send(
+                        "Clan is not in an active war (or war log is private).",
+                        ephemeral=True,
+                    )
+                    return
+                clan = war.get("clan") or {}
+                opp = war.get("opponent") or {}
+                embed = discord.Embed(
+                    title="⚔️ Current War",
+                    description=f"**{clan.get('name')}** vs **{opp.get('name')}**",
+                    color=0xE74C3C,
+                )
+                embed.add_field(name="State", value=war.get("state") or "—", inline=True)
+                embed.add_field(
+                    name="Team size",
+                    value=str(war.get("teamSize") or "?"),
+                    inline=True,
+                )
+                embed.add_field(
+                    name="Stars",
+                    value=f"{clan.get('stars', 0)} – {opp.get('stars', 0)}",
+                    inline=True,
+                )
+                embed.add_field(
+                    name="Destruction",
+                    value=(
+                        f"{clan.get('destructionPercentage', 0):.1f}% – "
+                        f"{opp.get('destructionPercentage', 0):.1f}%"
+                    ),
+                    inline=False,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except Exception as exc:
+                await interaction.followup.send(f"War lookup failed: {exc}", ephemeral=True)
+
+        @self.tree.command(name="refresh", description="Refresh a Battle Log card", guild=guild)
+        @app_commands.describe(tag="Player tag (optional if /link'd)")
+        async def refresh_cmd(
+            interaction: discord.Interaction, tag: str | None = None
+        ) -> None:
+            await interaction.response.defer(ephemeral=True)
+            if not tag:
+                tag = await self.db.get_discord_link(interaction.user.id)
+            if not tag:
+                await interaction.followup.send(
+                    "Provide a tag or `/link` first.", ephemeral=True
+                )
+                return
+            try:
+                await self.refresh_player_card(_norm_tag(tag))
+                await interaction.followup.send("Card refreshed.", ephemeral=True)
+            except Exception as exc:
+                await interaction.followup.send(f"Refresh failed: {exc}", ephemeral=True)
 
     async def on_interaction(self, interaction: discord.Interaction) -> None:
         if interaction.type is not discord.InteractionType.component:
@@ -94,6 +311,9 @@ class LegendBot(commands.Bot):
         if not self._boards_ready:
             await self._refresh_boards({"legend", "electro"})
             self._boards_ready = True
+        if not self._hub_ready:
+            await self._ensure_ranked_hub()
+            self._hub_ready = True
 
     async def _ensure_channels(self, guild: discord.Guild) -> None:
         legend = None
@@ -145,6 +365,29 @@ class LegendBot(commands.Bot):
     def log_view(self, player_tag: str) -> RefreshLogView:
         return RefreshLogView(player_tag)
 
+    async def _ensure_ranked_hub(self) -> None:
+        for bucket in ("legend", "electro"):
+            channel = self.channel_for(bucket)
+            if not channel:
+                continue
+            meta_key = f"ranked_hub_{bucket}"
+            msg_id = await self.db.get_meta(meta_key)
+            if msg_id:
+                try:
+                    await channel.fetch_message(int(msg_id))
+                    continue
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+            try:
+                msg = await channel.send(embed=ranked_hub_embed())
+                await self.db.set_meta(meta_key, str(msg.id))
+                try:
+                    await msg.pin(reason="Ranked Hub")
+                except discord.HTTPException:
+                    pass
+            except discord.HTTPException as exc:
+                log.warning("Hub post failed in %s: %s", bucket, exc)
+
     async def _post_hit(self, event) -> None:
         channel = self.channel_for(event.bucket)
         if not channel:
@@ -168,6 +411,24 @@ class LegendBot(commands.Bot):
                 clan_tag=self.settings.clan_tag,
                 day_key=day,
             )
+
+            active = [p for p in players if p.season_active]
+            podium = [
+                (p.name, p.day_net)
+                for p in sorted(active, key=lambda x: x.day_net, reverse=True)[:3]
+            ]
+            title = "Legend Day" if bucket == "legend" else "Electro Day"
+            accent = (201, 162, 39) if bucket == "legend" else (142, 68, 173)
+            banner = board_banner_png(
+                title=title,
+                clan_tag=self.settings.clan_tag,
+                day_key=day,
+                podium=podium,
+                accent=accent,
+            )
+            file = discord.File(BytesIO(banner), filename=f"{bucket}_day.png")
+            embed.set_image(url=f"attachment://{bucket}_day.png")
+
             meta_key = f"board_message_{bucket}"
             msg_id = await self.db.get_meta(meta_key)
             message = None
@@ -179,9 +440,9 @@ class LegendBot(commands.Bot):
 
             try:
                 if message:
-                    await message.edit(embed=embed)
+                    await message.edit(embed=embed, attachments=[file])
                 else:
-                    message = await channel.send(embed=embed)
+                    message = await channel.send(embed=embed, file=file)
                     await self.db.set_meta(meta_key, str(message.id))
                     try:
                         await message.pin(reason="Live ranked day board")
@@ -189,6 +450,14 @@ class LegendBot(commands.Bot):
                         pass
             except discord.HTTPException as exc:
                 log.warning("Failed to update %s board: %s", bucket, exc)
+
+            # Channel topic
+            try:
+                await channel.edit(
+                    topic=f"{title} {day} · {len(players)} tracked · /day for digest"
+                )
+            except discord.HTTPException:
+                pass
 
     async def _publish_player_log(self, player) -> None:
         channel = self.channel_for(player.track_bucket)
@@ -211,6 +480,7 @@ class LegendBot(commands.Bot):
             day_key=day,
             offense_net=player.day_offense_net,
             defense_net=player.day_defense_net,
+            badge_url=player.badge_url,
         )
         view = self.log_view(player.tag)
 
@@ -233,29 +503,48 @@ class LegendBot(commands.Bot):
             log.warning("Failed player log for %s: %s", player.tag, exc)
 
     async def _refresh_player_logs(self, players) -> None:
-        import asyncio
-
         for player in players:
             await self._publish_player_log(player)
-            # Stay under Discord channel edit rate limits
             await asyncio.sleep(1.2)
 
     async def refresh_player_card(self, player_tag: str) -> None:
-        """Force a poll cycle then republish one player's card."""
         result = await self.tracker.poll()
-        player = next((p for p in result.players if p.tag == player_tag), None)
+        want = _norm_tag(player_tag)
+        player = next((p for p in result.players if p.tag == want), None)
         if player is None:
-            # Normalize tag
-            want = player_tag if player_tag.startswith("#") else f"#{player_tag}"
-            player = next((p for p in result.players if p.tag == want), None)
-        if player is None:
-            stored = await self.db.get_player(
-                player_tag if player_tag.startswith("#") else f"#{player_tag}"
-            )
+            stored = await self.db.get_player(want)
             if not stored:
                 raise RuntimeError("Player is not currently tracked in Legend/Electro.")
             player = stored
         await self._publish_player_log(player)
+
+    async def _maybe_day_reset(self, players) -> None:
+        day = legend_day_key()
+        if day == self._last_day_key:
+            return
+        prev = self._last_day_key
+        self._last_day_key = day
+        await self.db.set_meta("last_legend_day", day)
+        for bucket in ("legend", "electro"):
+            channel = self.channel_for(bucket)
+            if not channel:
+                continue
+            label = "Legend" if bucket == "legend" else "Electro"
+            try:
+                await channel.send(
+                    embed=discord.Embed(
+                        title=f"🌅 New {label} day",
+                        description=(
+                            f"Legend day rolled from `{prev}` → **`{day}`** (05:00 UTC).\n"
+                            "Battle Logs reset — climb the podium!"
+                        ),
+                        color=0xC9A227 if bucket == "legend" else 0x8E44AD,
+                    )
+                )
+            except discord.HTTPException:
+                pass
+        # Refresh boards with digest flavor
+        await self._refresh_boards({"legend", "electro"})
 
     @tasks.loop(seconds=60)
     async def poll_loop(self) -> None:
@@ -272,6 +561,8 @@ class LegendBot(commands.Bot):
         except Exception:
             log.exception("Poll failed")
             return
+
+        await self._maybe_day_reset(result.players)
 
         for hit in result.hits:
             await self._post_hit(hit)
@@ -292,6 +583,9 @@ class LegendBot(commands.Bot):
     @poll_loop.before_loop
     async def before_poll(self) -> None:
         await self.wait_until_ready()
+        stored = await self.db.get_meta("last_legend_day")
+        if stored:
+            self._last_day_key = stored
 
 
 def main() -> None:

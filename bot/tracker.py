@@ -172,6 +172,7 @@ class Tracker:
                                 season_id=member.season_id,
                                 group_rank=group_rank,
                                 season_active=season_active,
+                                badge_url=member.badge_url,
                             ),
                             battle=battle,
                             bucket=bucket,
@@ -235,6 +236,7 @@ class Tracker:
                 season_active=season_active,
                 day_offense_net=day_offense_net,
                 day_defense_net=day_defense_net,
+                badge_url=member.badge_url,
             )
             await self.db.upsert_player(row)
             tracked_players.append(row)

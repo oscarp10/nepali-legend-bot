@@ -29,6 +29,7 @@ class PlayerRow:
     season_active: bool = False
     day_offense_net: int = 0
     day_defense_net: int = 0
+    badge_url: str | None = None
 
 
 @dataclass
@@ -104,6 +105,12 @@ class Database:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS discord_links (
+                discord_id TEXT PRIMARY KEY,
+                player_tag TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             """
         )
         await self._ensure_battle_columns()
@@ -130,6 +137,7 @@ class Database:
             ("season_active", "INTEGER NOT NULL DEFAULT 0"),
             ("day_offense_net", "INTEGER NOT NULL DEFAULT 0"),
             ("day_defense_net", "INTEGER NOT NULL DEFAULT 0"),
+            ("badge_url", "TEXT"),
         ):
             if col not in cols:
                 await self.db.execute(f"ALTER TABLE players ADD COLUMN {col} {decl}")
@@ -170,6 +178,7 @@ class Database:
             day_defense_net=int(row["day_defense_net"] or 0)
             if "day_defense_net" in keys
             else 0,
+            badge_url=row["badge_url"] if "badge_url" in keys else None,
         )
 
     async def get_player(self, tag: str) -> PlayerRow | None:
@@ -185,8 +194,8 @@ class Database:
                 tag, name, trophies, league_id, league_name, tier_id, tier_name,
                 track_bucket, day_key, day_net, day_attacks, day_defenses,
                 group_tag, season_id, group_rank, season_active,
-                day_offense_net, day_defense_net, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                day_offense_net, day_defense_net, badge_url, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(tag) DO UPDATE SET
                 name = excluded.name,
                 trophies = excluded.trophies,
@@ -205,6 +214,7 @@ class Database:
                 season_active = excluded.season_active,
                 day_offense_net = excluded.day_offense_net,
                 day_defense_net = excluded.day_defense_net,
+                badge_url = excluded.badge_url,
                 updated_at = excluded.updated_at
             """,
             (
@@ -226,6 +236,7 @@ class Database:
                 1 if player.season_active else 0,
                 player.day_offense_net,
                 player.day_defense_net,
+                player.badge_url,
                 now,
             ),
         )
@@ -344,6 +355,31 @@ class Database:
             (key, value),
         )
         await self.db.commit()
+
+    async def set_discord_link(self, discord_id: int, player_tag: str) -> None:
+        tag = player_tag.strip().upper()
+        if not tag.startswith("#"):
+            tag = f"#{tag}"
+        now = datetime.now(timezone.utc).isoformat()
+        await self.db.execute(
+            """
+            INSERT INTO discord_links (discord_id, player_tag, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(discord_id) DO UPDATE SET
+                player_tag = excluded.player_tag,
+                updated_at = excluded.updated_at
+            """,
+            (str(discord_id), tag, now),
+        )
+        await self.db.commit()
+
+    async def get_discord_link(self, discord_id: int) -> str | None:
+        cur = await self.db.execute(
+            "SELECT player_tag FROM discord_links WHERE discord_id = ?",
+            (str(discord_id),),
+        )
+        row = await cur.fetchone()
+        return row["player_tag"] if row else None
 
     async def prune_missing(self, active_tags: set[str]) -> None:
         if not active_tags:

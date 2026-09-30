@@ -20,6 +20,7 @@ class ClanMember:
     group_tag: str | None = None
     season_id: int | None = None
     town_hall: int | None = None
+    badge_url: str | None = None
 
 
 @dataclass
@@ -119,6 +120,8 @@ class CocClient:
         league = data.get("league") or {}
         tier = data.get("leagueTier") or {}
         season = data.get("currentLeagueSeasonId") or 0
+        icons = league.get("iconUrls") or {}
+        badge = icons.get("medium") or icons.get("small") or icons.get("tiny")
         return ClanMember(
             tag=data["tag"],
             name=data["name"],
@@ -130,7 +133,25 @@ class CocClient:
             group_tag=data.get("currentLeagueGroupTag"),
             season_id=int(season) if season else None,
             town_hall=data.get("townHallLevel"),
+            badge_url=badge,
         )
+
+    async def clan(self, clan_tag: str) -> dict:
+        data = await self._get(f"/clans/{self.encode_tag(clan_tag)}")
+        assert isinstance(data, dict)
+        return data
+
+    async def current_war(self, clan_tag: str) -> dict | None:
+        try:
+            data = await self._get(f"/clans/{self.encode_tag(clan_tag)}/currentwar")
+        except RuntimeError as exc:
+            if "403" in str(exc) or "404" in str(exc):
+                return None
+            raise
+        assert isinstance(data, dict)
+        if (data.get("state") or "").lower() in ("notinhwar", "not_in_war"):
+            return None
+        return data
 
     async def battlelog(self, player_tag: str) -> list[RankedBattle]:
         data = await self._get(f"/players/{self.encode_tag(player_tag)}/battlelog")
