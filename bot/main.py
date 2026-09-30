@@ -13,6 +13,7 @@ from discord.ext import commands, tasks
 from bot.coc_client import CocClient
 from bot.config import Settings, load_settings
 from bot.db import Database, legend_day_key, player_log_meta_key
+from bot.brand import PURPLE
 from bot.embeds import (
     day_digest_embed,
     player_snapshot_embed,
@@ -121,7 +122,7 @@ class LegendBot(commands.Bot):
                 embed = discord.Embed(
                     title=f"🏰 {data.get('name')}",
                     description=(data.get("description") or "")[:400] or "_No description_",
-                    color=0xC9A227,
+                    color=PURPLE,
                 )
                 embed.add_field(name="Tag", value=f"`{data.get('tag')}`", inline=True)
                 embed.add_field(
@@ -229,7 +230,7 @@ class LegendBot(commands.Bot):
                 embed = discord.Embed(
                     title="⚔️ Current War",
                     description=f"**{clan.get('name')}** vs **{opp.get('name')}**",
-                    color=0xE74C3C,
+                    color=PURPLE,
                 )
                 embed.add_field(name="State", value=war.get("state") or "—", inline=True)
                 embed.add_field(

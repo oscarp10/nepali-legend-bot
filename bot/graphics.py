@@ -13,6 +13,9 @@ class LogHit(TypedDict, total=False):
     trophies: int
 
 
+from bot.brand import PNG
+
+
 def progress_bar(current: int, total: int, *, width: int = 10) -> str:
     """Unicode bar for attack/defense progress."""
     total = max(1, total)
@@ -187,7 +190,7 @@ def _draw_star(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, filled: bool
 
 
 def _draw_trophy(draw: ImageDraw.ImageDraw, x: int, y: int, s: int = 14) -> None:
-    gold = (255, 200, 50)
+    gold = PNG["gold"]
     dark = (180, 130, 20)
     draw.ellipse([x, y, x + s, y + s * 0.7], fill=gold, outline=dark)
     draw.rectangle([x + s * 0.35, y + s * 0.55, x + s * 0.65, y + s * 0.85], fill=gold)
@@ -247,13 +250,13 @@ def battle_log_png(
     body_h = slots * (row_h + row_gap) - row_gap
     h = pad + header_h + 8 + sub_h + 10 + body_h + footer_h + pad
 
-    img = Image.new("RGB", (w, h), (48, 28, 58))
-    _diamond_bg(img, (70, 40, 90))
+    img = Image.new("RGB", (w, h), PNG["bg"])
+    _diamond_bg(img, tuple(min(255, c + 20) for c in PNG["bg"]))
     draw = ImageDraw.Draw(img)
 
     # Outer frame
-    draw.rounded_rectangle([6, 6, w - 7, h - 7], radius=16, outline=(120, 85, 55), width=4)
-    draw.rounded_rectangle([12, 12, w - 13, h - 13], radius=12, outline=(90, 60, 40), width=2)
+    draw.rounded_rectangle([6, 6, w - 7, h - 7], radius=16, outline=PNG["border"], width=4)
+    draw.rounded_rectangle([12, 12, w - 13, h - 13], radius=12, outline=PNG["border_inner"], width=2)
 
     name_font = _font(28)
     label_font = _font(15)
@@ -266,7 +269,7 @@ def battle_log_png(
     # Purple header — player name large on top
     hx0, hy0 = pad, pad
     hx1, hy1 = w - pad, pad + header_h
-    draw.rounded_rectangle([hx0, hy0, hx1, hy1], radius=8, fill=(92, 48, 130))
+    draw.rounded_rectangle([hx0, hy0, hx1, hy1], radius=8, fill=PNG["header"])
 
     atk_sum = sum(int(a.get("trophies") or 0) for a in attacks)
     def_sum = sum(int(d.get("trophies") or 0) for d in defenses)
@@ -291,7 +294,7 @@ def battle_log_png(
     sub = "CURRENT RANKED STANDINGS"
     if player_tag:
         sub = f"{sub}  ·  {player_tag}"
-    draw.text((hx0 + 16, hy0 + 46), sub, fill=(210, 185, 230), font=label_font)
+    draw.text((hx0 + 16, hy0 + 46), sub, fill=PNG["subtitle"], font=label_font)
 
     # Column sub-headers
     ay = hy1 + 8
@@ -299,7 +302,7 @@ def battle_log_png(
     right_x = pad + col_w + gap
 
     def _col_header(x: int, label: str, net: int, attack: bool) -> None:
-        draw.rounded_rectangle([x, ay, x + col_w, ay + sub_h], radius=6, fill=(70, 40, 95))
+        draw.rounded_rectangle([x, ay, x + col_w, ay + sub_h], radius=6, fill=PNG["col_header"])
         if attack:
             _draw_sword(draw, x + 10, ay + 8)
         else:
@@ -314,7 +317,7 @@ def battle_log_png(
     _col_header(right_x, "Defenses", def_sum, False)
 
     def _row(x: int, y: int, hit: LogHit | None, empty_label: str) -> None:
-        draw.rounded_rectangle([x, y, x + col_w, y + row_h], radius=5, fill=(198, 186, 176))
+        draw.rounded_rectangle([x, y, x + col_w, y + row_h], radius=5, fill=PNG["row"])
         if hit is None:
             draw.ellipse([x + 10, y + 9, x + 24, y + 23], fill=(70, 140, 210))
             draw.text((x + 14, y + 8), "i", fill=(255, 255, 255), font=small_font)

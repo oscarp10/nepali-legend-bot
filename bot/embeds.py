@@ -7,14 +7,16 @@ import discord
 from bot.coc_client import RankedBattle
 from bot.db import BattleRow, PlayerRow
 from bot.graphics import destruction_bar, progress_bar
+from bot.brand import GOLD, PURPLE, PURPLE_SOFT
 
 
 ATTACK_COLOR = 0x2ECC71
 DEFENSE_COLOR = 0xE74C3C
-BOARD_COLOR = 0xC9A227
-ELECTRO_BOARD_COLOR = 0x8E44AD
-BATTLE_LOG_LEGEND = 0xD4A017
-BATTLE_LOG_ELECTRO = 0x9B59B6
+BOARD_COLOR = PURPLE
+ELECTRO_BOARD_COLOR = PURPLE_SOFT
+BATTLE_LOG_LEGEND = PURPLE
+BATTLE_LOG_ELECTRO = PURPLE_SOFT
+BRAND_GOLD = GOLD
 
 
 def slots_for_tier(tier_name: str | None) -> int:
