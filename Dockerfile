@@ -1,4 +1,4 @@
-# Minimal image — runs off your laptop once deployed to Railway/Fly/etc.
+# Minimal image — runs in Railway/Fly so your laptop can sleep.
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -9,7 +9,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# System deps kept tiny (certs only)
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -18,11 +17,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY bot ./bot
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh \
+    && mkdir -p /data
 
-RUN mkdir -p /data \
-    && useradd --create-home --uid 10001 bot \
-    && chown -R bot:bot /app /data
-
-USER bot
-
+# Railway volumes are often root-owned; entrypoint ensures /data is writable.
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["python", "-m", "bot.main"]
