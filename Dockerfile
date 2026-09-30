@@ -25,6 +25,4 @@ RUN mkdir -p /data \
 
 USER bot
 
-VOLUME ["/data"]
-
 CMD ["python", "-m", "bot.main"]
