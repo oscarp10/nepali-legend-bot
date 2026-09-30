@@ -45,6 +45,46 @@ def _font(size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
+# Clash names often use phonetic small-caps that many fonts miss
+_SMALL_CAPS = str.maketrans(
+    {
+        "ᴀ": "a",
+        "ʙ": "b",
+        "ᴄ": "c",
+        "ᴅ": "d",
+        "ᴇ": "e",
+        "ꜰ": "f",
+        "ɢ": "g",
+        "ʜ": "h",
+        "ɪ": "i",
+        "ᴊ": "j",
+        "ᴋ": "k",
+        "ʟ": "l",
+        "ᴍ": "m",
+        "ɴ": "n",
+        "ᴏ": "o",
+        "ᴘ": "p",
+        "ǫ": "q",
+        "ʀ": "r",
+        "ꜱ": "s",
+        "ᴛ": "t",
+        "ᴜ": "u",
+        "ᴠ": "v",
+        "ᴡ": "w",
+        "ʏ": "y",
+        "ᴢ": "z",
+        "Ｇ": "G",
+        "Ａ": "A",
+    }
+)
+
+
+def _readable_name(name: str) -> str:
+    import unicodedata
+
+    return unicodedata.normalize("NFKC", name).translate(_SMALL_CAPS)
+
+
 def board_banner_png(
     *,
     title: str,
@@ -240,11 +280,11 @@ def battle_log_png(
 
     # Name room: leave space for trophy cluster
     name_max_w = hx1 - hx0 - 16 - tw - 60
-    display_name = player_name or "Player"
+    display_name = _readable_name(player_name or "Player")
     # Truncate by measured width
     while len(display_name) > 1 and draw.textlength(display_name, font=name_font) > name_max_w:
         display_name = display_name[:-1]
-    if display_name != player_name and len(display_name) > 1:
+    if display_name != _readable_name(player_name or "Player") and len(display_name) > 1:
         display_name = display_name[:-1] + "…"
 
     draw.text((hx0 + 16, hy0 + 10), display_name, fill=(255, 255, 255), font=name_font)
