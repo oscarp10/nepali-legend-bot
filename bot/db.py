@@ -356,6 +356,12 @@ class Database:
         )
         await self.db.commit()
 
+    async def delete_meta_prefix(self, prefix: str) -> None:
+        await self.db.execute(
+            "DELETE FROM meta WHERE key LIKE ?", (f"{prefix}%",)
+        )
+        await self.db.commit()
+
     async def set_discord_link(self, discord_id: int, player_tag: str) -> None:
         tag = player_tag.strip().upper()
         if not tag.startswith("#"):

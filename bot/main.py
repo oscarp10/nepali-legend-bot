@@ -308,12 +308,91 @@ class LegendBot(commands.Bot):
             log.error("Guild %s not found — is the bot invited?", self.settings.guild_id)
             return
         await self._ensure_channels(guild)
+        await self._purge_spam_once()
         if not self._boards_ready:
             await self._refresh_boards({"legend", "electro"})
             self._boards_ready = True
         if not self._hub_ready:
             await self._ensure_ranked_hub()
             self._hub_ready = True
+        # Rebuild one card per tracked player after purge
+        day = legend_day_key()
+        for bucket in ("legend", "electro"):
+            for player in await self.db.list_bucket(bucket, day):
+                await self._publish_player_log(player)
+                await asyncio.sleep(1.0)
+
+    async def _purge_spam_once(self) -> None:
+        """Delete old per-hit spam + duplicate cards; keep channels clean."""
+        flag = await self.db.get_meta("single_card_mode_v1")
+        if flag == "done":
+            return
+        log.info("Purging ranked channels for single-card mode…")
+        me = self.user.id if self.user else None
+        for bucket in ("legend", "electro"):
+            channel = self.channel_for(bucket)
+            if not channel or not me:
+                continue
+            try:
+                for pinned in await channel.pins():
+                    if pinned.author.id == me:
+                        try:
+                            await pinned.unpin(reason="Single-card rebuild")
+                        except discord.HTTPException:
+                            pass
+            except discord.HTTPException:
+                pass
+
+            deleted = 0
+            while True:
+                batch: list[discord.Message] = []
+                async for msg in channel.history(limit=100):
+                    if msg.author.id == me:
+                        batch.append(msg)
+                if not batch:
+                    break
+                # Prefer bulk delete for young messages
+                young = [
+                    m
+                    for m in batch
+                    if (discord.utils.utcnow() - m.created_at).days < 14
+                ]
+                old = [m for m in batch if m not in young]
+                try:
+                    if len(young) >= 2:
+                        await channel.delete_messages(young)
+                        deleted += len(young)
+                    else:
+                        for m in young:
+                            await m.delete()
+                            deleted += 1
+                            await asyncio.sleep(0.35)
+                except discord.HTTPException:
+                    for m in young:
+                        try:
+                            await m.delete()
+                            deleted += 1
+                        except discord.HTTPException:
+                            pass
+                        await asyncio.sleep(0.35)
+                for m in old:
+                    try:
+                        await m.delete()
+                        deleted += 1
+                    except discord.HTTPException:
+                        pass
+                    await asyncio.sleep(0.4)
+                if len(batch) < 100:
+                    break
+            log.info("Purged %s messages from #%s", deleted, channel.name)
+
+        await self.db.delete_meta_prefix("player_log_")
+        await self.db.delete_meta_prefix("board_message_")
+        await self.db.delete_meta_prefix("ranked_hub_")
+        await self.db.set_meta("single_card_mode_v1", "done")
+        self._boards_ready = False
+        self._hub_ready = False
+        log.info("Single-card purge complete — rebuilding…")
 
     async def _ensure_channels(self, guild: discord.Guild) -> None:
         legend = None
@@ -389,14 +468,19 @@ class LegendBot(commands.Bot):
                 log.warning("Hub post failed in %s: %s", bucket, exc)
 
     async def _post_hit(self, event) -> None:
-        channel = self.channel_for(event.bucket)
-        if not channel:
+        # Intentionally no channel spam — hits only update the player's live card.
+        return
+
+    async def _maybe_day_reset(self, players) -> None:
+        day = legend_day_key()
+        if day == self._last_day_key:
             return
-        embed = hit_embed(player=event.player, battle=event.battle)
-        try:
-            await channel.send(embed=embed)
-        except discord.HTTPException as exc:
-            log.warning("Failed to post hit: %s", exc)
+        prev = self._last_day_key
+        self._last_day_key = day
+        await self.db.set_meta("last_legend_day", day)
+        log.info("Legend day rolled %s → %s", prev, day)
+        # Refresh boards only (no extra announcement posts)
+        await self._refresh_boards({"legend", "electro"})
 
     async def _refresh_boards(self, buckets: set[str]) -> None:
         day = legend_day_key()
@@ -518,34 +602,6 @@ class LegendBot(commands.Bot):
             player = stored
         await self._publish_player_log(player)
 
-    async def _maybe_day_reset(self, players) -> None:
-        day = legend_day_key()
-        if day == self._last_day_key:
-            return
-        prev = self._last_day_key
-        self._last_day_key = day
-        await self.db.set_meta("last_legend_day", day)
-        for bucket in ("legend", "electro"):
-            channel = self.channel_for(bucket)
-            if not channel:
-                continue
-            label = "Legend" if bucket == "legend" else "Electro"
-            try:
-                await channel.send(
-                    embed=discord.Embed(
-                        title=f"🌅 New {label} day",
-                        description=(
-                            f"Legend day rolled from `{prev}` → **`{day}`** (05:00 UTC).\n"
-                            "Battle Logs reset — climb the podium!"
-                        ),
-                        color=0xC9A227 if bucket == "legend" else 0x8E44AD,
-                    )
-                )
-            except discord.HTTPException:
-                pass
-        # Refresh boards with digest flavor
-        await self._refresh_boards({"legend", "electro"})
-
     @tasks.loop(seconds=60)
     async def poll_loop(self) -> None:
         await self.wait_until_ready()
@@ -564,9 +620,7 @@ class LegendBot(commands.Bot):
 
         await self._maybe_day_reset(result.players)
 
-        for hit in result.hits:
-            await self._post_hit(hit)
-
+        # Hits only update the live player card (no new messages)
         if result.buckets_changed:
             await self._refresh_boards(result.buckets_changed)
 

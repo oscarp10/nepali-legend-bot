@@ -13,8 +13,8 @@ ATTACK_COLOR = 0x2ECC71
 DEFENSE_COLOR = 0xE74C3C
 BOARD_COLOR = 0xC9A227
 ELECTRO_BOARD_COLOR = 0x8E44AD
-BATTLE_LOG_LEGEND = 0xC9A227
-BATTLE_LOG_ELECTRO = 0x7D3C98
+BATTLE_LOG_LEGEND = 0xD4A017
+BATTLE_LOG_ELECTRO = 0x9B59B6
 
 
 def slots_for_tier(tier_name: str | None) -> int:
@@ -53,63 +53,43 @@ def _hit_rate(attacks: list[BattleRow]) -> str:
         return "—"
     avg = sum(b.stars for b in attacks) / len(attacks)
     three = sum(1 for b in attacks if b.stars >= 3)
-    return f"{avg:.2f}★ avg · {three}/{len(attacks)} three-star"
+    return f"{avg:.2f}★ · {three}× 3★"
 
 
 def hit_embed(*, player: PlayerRow, battle: RankedBattle) -> discord.Embed:
-    if battle.is_attack:
-        title = f"⚔️ Ranked Attack  {_stars(battle.stars)}"
-        color = ATTACK_COLOR
-        kind = "Attack"
-    else:
-        title = f"🛡️ Ranked Defense  {_stars(battle.stars)}"
-        color = DEFENSE_COLOR
-        kind = "Defense"
-
-    bar = destruction_bar(battle.destruction)
+    """Unused for channel spam — kept for optional future use."""
+    color = ATTACK_COLOR if battle.is_attack else DEFENSE_COLOR
+    kind = "Attack" if battle.is_attack else "Defense"
     embed = discord.Embed(
-        title=title,
-        description=f"`{bar}` **{battle.destruction}%**",
+        title=f"{'⚔️' if battle.is_attack else '🛡️'} {kind}  {_stars(battle.stars)}",
+        description=f"`{destruction_bar(battle.destruction)}` **{battle.destruction}%**",
         color=color,
         timestamp=datetime.now(timezone.utc),
     )
-    embed.add_field(
-        name="Player",
-        value=f"**{player.name}**\n`{player.tag}`\n{player.tier_name or '—'}",
-        inline=True,
-    )
-    embed.add_field(
-        name="Opponent",
-        value=(
-            f"**{battle.opponent_name}**\n"
-            f"`{battle.opponent_tag or '—'}`\n"
-            f"TH{battle.opponent_th or '?'}"
-        ),
-        inline=True,
-    )
-    embed.add_field(
-        name="Result",
-        value=f"**{battle.stars}★** · **{battle.destruction}%**",
-        inline=True,
-    )
-    if getattr(player, "badge_url", None):
-        embed.set_thumbnail(url=player.badge_url)  # type: ignore[attr-defined]
-    embed.set_footer(text=f"Nepali Legend's · Ranked {kind}")
+    embed.add_field(name="Player", value=f"**{player.name}**", inline=True)
+    embed.add_field(name="Opponent", value=f"**{battle.opponent_name}**", inline=True)
     return embed
 
 
-def _battle_line(battle: BattleRow) -> str:
+def _battle_line(battle: BattleRow, *, latest: bool = False) -> str:
     name = battle.opponent_name
-    if len(name) > 14:
-        name = name[:13] + "…"
-    return f"`{_stars(battle.stars)}` **{battle.destruction}%** · {name}"
+    if len(name) > 16:
+        name = name[:15] + "…"
+    prefix = "▸ " if latest else "· "
+    return (
+        f"{prefix}`{_stars(battle.stars)}` **{battle.destruction}%** · **{name}**"
+        + (f" · TH{battle.opponent_th}" if battle.opponent_th else "")
+    )
 
 
 def _side_column(battles: list[BattleRow], *, empty: str, cap: int) -> str:
     if not battles:
         return empty
     shown = battles[-cap:] if len(battles) > cap else battles
-    text = "\n".join(_battle_line(b) for b in shown)
+    lines = []
+    for i, b in enumerate(shown):
+        lines.append(_battle_line(b, latest=(i == len(shown) - 1)))
+    text = "\n".join(lines)
     if len(text) > 1024:
         text = text[:1020] + "…"
     return text
@@ -125,6 +105,7 @@ def battle_log_embed(
     defense_net: int = 0,
     badge_url: str | None = None,
 ) -> discord.Embed:
+    """Single live card per player — edited in place, never spam-posted."""
     cap = slots_for_tier(player.tier_name)
     tier = player.tier_name or "Ranked"
     rank = f"#{player.group_rank}" if player.group_rank else "—"
@@ -132,47 +113,68 @@ def battle_log_embed(
     now = datetime.now(timezone.utc)
     color = _tier_color(player.tier_name, player.track_bucket)
 
-    atk_bar = progress_bar(len(attacks), cap)
-    def_bar = progress_bar(len(defenses), cap)
+    atk_n, def_n = len(attacks), len(defenses)
+    atk_bar = progress_bar(atk_n, cap, width=8)
+    def_bar = progress_bar(def_n, cap, width=8)
+
+    # Latest hit callout
+    latest = None
+    if attacks or defenses:
+        pool = list(attacks) + list(defenses)
+        latest = max(pool, key=lambda b: b.battle_timestamp)
+        latest_txt = (
+            f"{'⚔️' if latest.is_attack else '🛡️'} {_stars(latest.stars)} "
+            f"**{latest.destruction}%** vs **{latest.opponent_name}**"
+        )
+    else:
+        latest_txt = "_No ranked hits yet today_"
 
     if not player.season_active:
         description = (
-            f"**{player.name}**\n"
-            f"◇ {tier} · Rank {rank}\n"
+            f"# {player.name}\n"
+            f"**{tier}** · Rank {rank}\n"
             f"`{player.tag}`\n\n"
-            f"🏆 **—**\n"
-            f"_Season not started yet_"
+            f"### 🏆 —\n"
+            f"⏳ Season not started — card stays ready"
         )
-        atk_body = "No attack performed.\n`+0` 🏆"
-        def_body = "No defense received."
-        atk_title = f"⚔️ Attacks\n`{atk_bar}`"
-        def_title = f"🛡️ Defenses\n`{def_bar}`"
+        atk_body = "▫ No attack performed\n`+0` 🏆"
+        def_body = "▫ No defense received"
     else:
         description = (
-            f"**{player.name}**\n"
-            f"◇ {tier} · Rank {rank}\n"
+            f"# {player.name}\n"
+            f"**{tier}** · Rank {rank}\n"
             f"`{player.tag}`\n\n"
-            f"🏆 **{cups}**\n"
-            f"Day **{_fmt_net(player.day_net)}** · Hit rate {_hit_rate(attacks)}"
+            f"### 🏆 {cups}\n"
+            f"**Day {_fmt_net(player.day_net)}** · {_hit_rate(attacks)}\n\n"
+            f"**Last hit**\n{latest_txt}"
         )
         atk_body = _side_column(
-            attacks, empty="No attack performed.\n`+0` 🏆", cap=cap
+            attacks, empty="▫ No attack performed\n`+0` 🏆", cap=min(cap, 12)
         )
-        def_body = _side_column(defenses, empty="No defense received.", cap=cap)
-        atk_title = f"⚔️ Attacks · `{_fmt_net(offense_net)}` 🏆\n`{atk_bar}` {len(attacks)}"
-        def_title = f"🛡️ Defenses · `{_fmt_net(defense_net)}` 🏆\n`{def_bar}` {len(defenses)}"
+        def_body = _side_column(
+            defenses, empty="▫ No defense received", cap=min(cap, 12)
+        )
 
     embed = discord.Embed(
-        title="🏆  Battle Log",
+        title=None,
         description=description,
         color=color,
         timestamp=now,
     )
-    embed.add_field(name=atk_title, value=atk_body, inline=True)
-    embed.add_field(name=def_title, value=def_body, inline=True)
+    embed.add_field(
+        name=f"⚔️ Attacks  `{_fmt_net(offense_net)}` 🏆",
+        value=f"`{atk_bar}` **{atk_n}**\n{atk_body}",
+        inline=True,
+    )
+    embed.add_field(
+        name=f"🛡️ Defenses  `{_fmt_net(defense_net)}` 🏆",
+        value=f"`{def_bar}` **{def_n}**\n{def_body}",
+        inline=True,
+    )
     if badge_url:
         embed.set_thumbnail(url=badge_url)
-    embed.set_footer(text=f"Last refreshed · {day_key} · Nepali Legend's")
+    embed.set_author(name="Nepali Legend's · Live Battle Log")
+    embed.set_footer(text=f"Updates in place · {day_key} · Refresh ↻")
     return embed
 
 
@@ -193,12 +195,11 @@ def board_embed(
 
     active = [p for p in players if p.season_active]
     podium = sorted(active, key=lambda p: p.day_net, reverse=True)[:3]
-    podium_lines = []
     medals = ("🥇", "🥈", "🥉")
-    for i, p in enumerate(podium):
-        podium_lines.append(
-            f"{medals[i]} **{p.name}** · day {_fmt_net(p.day_net)} · 🏆 {p.trophies:,}"
-        )
+    podium_lines = [
+        f"{medals[i]} **{p.name}** · day {_fmt_net(p.day_net)} · 🏆 {p.trophies:,}"
+        for i, p in enumerate(podium)
+    ]
     podium_block = "\n".join(podium_lines) if podium_lines else "_No podium yet today._"
 
     if not players:
@@ -233,7 +234,7 @@ def board_embed(
     embed.add_field(name="Clan", value=f"`{clan_tag}`", inline=True)
     embed.add_field(name="Legend day", value=f"`{day_key}` (05:00 UTC)", inline=True)
     embed.add_field(name="Tracked", value=str(len(players)), inline=True)
-    embed.set_footer(text="Read-only feed · /day for digest · Battle Logs below")
+    embed.set_footer(text="One live card per player below · no spam posts")
     return embed
 
 
@@ -241,11 +242,10 @@ def ranked_hub_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🏆 Ranked Hub — Nepali Legend's",
         description=(
-            "Custom tracker for **Legend I / II / III** and **Electro** clan mates "
-            "(not the global leaderboard).\n\n"
-            "**Battle Log cards** update live — Attack | Defense side by side.\n"
+            "Each player has **one live Battle Log card** that updates in place "
+            "(attacks & defenses appear on the card — no spam).\n\n"
             "Use **Refresh** on a card or `/refresh`.\n"
-            "Link your account with `/link #PLAYERTAG` then `/me`.\n\n"
+            "`/link #TAG` → `/me` for your snapshot.\n\n"
             "ClashPerk still handles verify, donations, wars & CWL."
         ),
         color=BOARD_COLOR,
@@ -277,17 +277,13 @@ def day_digest_embed(
     if by_net:
         embed.add_field(
             name="Top day net",
-            value="\n".join(
-                f"**{p.name}** `{_fmt_net(p.day_net)}`" for p in by_net
-            ),
+            value="\n".join(f"**{p.name}** `{_fmt_net(p.day_net)}`" for p in by_net),
             inline=True,
         )
     if by_atk:
         embed.add_field(
             name="Most attacks",
-            value="\n".join(
-                f"**{p.name}** `{p.day_attacks}`" for p in by_atk
-            ),
+            value="\n".join(f"**{p.name}** `{p.day_attacks}`" for p in by_atk),
             inline=True,
         )
     embed.add_field(
@@ -318,11 +314,7 @@ def player_snapshot_embed(
     )
     embed.add_field(name="Trophies", value=f"**{trophies:,}** 🏆", inline=True)
     embed.add_field(name="Tier", value=tier or league or "—", inline=True)
-    embed.add_field(
-        name="Group rank",
-        value=f"#{rank}" if rank else "—",
-        inline=True,
-    )
+    embed.add_field(name="Group rank", value=f"#{rank}" if rank else "—", inline=True)
     if day_net is not None:
         embed.add_field(name="Day net", value=_fmt_net(day_net), inline=True)
     if badge_url:
