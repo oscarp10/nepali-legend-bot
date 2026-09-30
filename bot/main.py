@@ -71,6 +71,7 @@ class LegendBot(commands.Bot):
         self._boards_ready = False
         self._hub_ready = False
         self._last_day_key = legend_day_key()
+        self._ready_for_poll = False
 
     async def setup_hook(self) -> None:
         await self.db.connect()
@@ -321,10 +322,12 @@ class LegendBot(commands.Bot):
             for player in await self.db.list_bucket(bucket, day):
                 await self._publish_player_log(player)
                 await asyncio.sleep(1.0)
+        self._ready_for_poll = True
+        log.info("Rebuild finished — polls enabled")
 
     async def _purge_spam_once(self) -> None:
         """Delete old per-hit spam + duplicate cards; keep channels clean."""
-        flag = await self.db.get_meta("single_card_mode_v1")
+        flag = await self.db.get_meta("single_card_mode_v2")
         if flag == "done":
             return
         log.info("Purging ranked channels for single-card mode…")
@@ -334,7 +337,7 @@ class LegendBot(commands.Bot):
             if not channel or not me:
                 continue
             try:
-                for pinned in await channel.pins():
+                async for pinned in channel.pins():
                     if pinned.author.id == me:
                         try:
                             await pinned.unpin(reason="Single-card rebuild")
@@ -389,7 +392,7 @@ class LegendBot(commands.Bot):
         await self.db.delete_meta_prefix("player_log_")
         await self.db.delete_meta_prefix("board_message_")
         await self.db.delete_meta_prefix("ranked_hub_")
-        await self.db.set_meta("single_card_mode_v1", "done")
+        await self.db.set_meta("single_card_mode_v2", "done")
         self._boards_ready = False
         self._hub_ready = False
         log.info("Single-card purge complete — rebuilding…")
@@ -605,6 +608,8 @@ class LegendBot(commands.Bot):
     @tasks.loop(seconds=60)
     async def poll_loop(self) -> None:
         await self.wait_until_ready()
+        if not self._ready_for_poll:
+            return
         if not self._channel_cache:
             guild = self.get_guild(self.settings.guild_id)
             if guild:
