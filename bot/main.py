@@ -507,6 +507,7 @@ class LegendBot(commands.Bot):
         attacks: list[dict] = []
         defenses: list[dict] = []
         season_cups = player.trophies if player.season_active else None
+        group_rank = player.group_rank
 
         if player.season_active and player.group_tag and player.season_id:
             try:
@@ -517,6 +518,8 @@ class LegendBot(commands.Bot):
                 defenses = self._hits_from_logs(list(snap.get("defense_logs") or []))
                 if snap.get("trophies") is not None:
                     season_cups = int(snap["trophies"])
+                if snap.get("rank") is not None:
+                    group_rank = int(snap["rank"])
             except Exception:
                 log.exception("Leaguegroup log fetch failed for %s", player.tag)
 
@@ -550,10 +553,19 @@ class LegendBot(commands.Bot):
             slots=slots,
             season_trophies=season_cups if player.season_active else 0,
             player_tag=player.tag,
+            tier_name=player.tier_name,
+            group_rank=group_rank,
         )
         filename = f"battlelog_{player.tag.lstrip('#')}.png"
         file = discord.File(BytesIO(png), filename=filename)
         view = self.log_view(player.tag)
+
+        standing_bits = [f"**{player.name}**"]
+        if player.tier_name:
+            standing_bits.append(player.tier_name)
+        if group_rank:
+            standing_bits.append(f"Rank **#{group_rank}**")
+        content = " · ".join(standing_bits)
 
         meta_key = player_log_meta_key(player.tag)
         msg_id = await self.db.get_meta(meta_key)
@@ -567,14 +579,14 @@ class LegendBot(commands.Bot):
         try:
             if message:
                 await message.edit(
-                    content=f"**{player.name}**",
+                    content=content,
                     embed=None,
                     attachments=[file],
                     view=view,
                 )
             else:
                 message = await channel.send(
-                    content=f"**{player.name}**",
+                    content=content,
                     file=file,
                     view=view,
                 )

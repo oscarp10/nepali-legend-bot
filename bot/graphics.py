@@ -235,6 +235,8 @@ def battle_log_png(
     slots: int,
     season_trophies: int | None = None,
     player_tag: str | None = None,
+    tier_name: str | None = None,
+    group_rank: int | None = None,
 ) -> bytes:
     """Clash-style Battle Log: Attacks | Defenses with fixed weekly slots."""
     slots = max(1, min(int(slots), 36))
@@ -265,6 +267,7 @@ def battle_log_png(
     small_font = _font(14)
     empty_font = _font(14)
     trophy_font = _font(26)
+    rank_font = _font(18)
 
     # Purple header — player name large on top
     hx0, hy0 = pad, pad
@@ -281,19 +284,50 @@ def battle_log_png(
     _draw_trophy(draw, int(hx1 - 28 - tw - 24), hy0 + 26, 22)
     draw.text((hx1 - 16 - tw, hy0 + 24), total_txt, fill=(255, 255, 255), font=trophy_font)
 
-    # Name room: leave space for trophy cluster
-    name_max_w = hx1 - hx0 - 16 - tw - 60
+    # Standing badge left of trophies (e.g. #4)
+    rank_block_w = 0
+    if group_rank:
+        rank_txt = f"#{group_rank}"
+        rw = draw.textlength(rank_txt, font=rank_font)
+        badge_w = int(rw + 18)
+        badge_x1 = int(hx1 - 28 - tw - 36)
+        badge_x0 = badge_x1 - badge_w
+        draw.rounded_rectangle(
+            [badge_x0, hy0 + 22, badge_x1, hy0 + 52],
+            radius=8,
+            fill=(70, 35, 100),
+            outline=PNG["gold"],
+            width=2,
+        )
+        draw.text(
+            (badge_x0 + 9, hy0 + 27),
+            rank_txt,
+            fill=PNG["gold"],
+            font=rank_font,
+        )
+        rank_block_w = badge_w + 12
+
+    # Name room: leave space for trophy + rank
+    name_max_w = hx1 - hx0 - 16 - tw - 60 - rank_block_w
     display_name = _readable_name(player_name or "Player")
-    # Truncate by measured width
     while len(display_name) > 1 and draw.textlength(display_name, font=name_font) > name_max_w:
         display_name = display_name[:-1]
     if display_name != _readable_name(player_name or "Player") and len(display_name) > 1:
         display_name = display_name[:-1] + "…"
 
     draw.text((hx0 + 16, hy0 + 10), display_name, fill=(255, 255, 255), font=name_font)
-    sub = "CURRENT RANKED STANDINGS"
+
+    # Subtitle: tier · Rank #N · tag
+    parts: list[str] = []
+    if tier_name:
+        parts.append(tier_name)
+    if group_rank:
+        parts.append(f"Rank #{group_rank}")
+    else:
+        parts.append("CURRENT RANKED STANDINGS")
     if player_tag:
-        sub = f"{sub}  ·  {player_tag}"
+        parts.append(player_tag)
+    sub = "  ·  ".join(parts)
     draw.text((hx0 + 16, hy0 + 46), sub, fill=PNG["subtitle"], font=label_font)
 
     # Column sub-headers
