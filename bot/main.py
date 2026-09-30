@@ -310,39 +310,77 @@ class LegendBot(commands.Bot):
             return
         await self._ensure_channels(guild)
         await self._purge_spam_once()
-        if not self._boards_ready:
-            await self._refresh_boards({"legend", "electro"})
-            self._boards_ready = True
+        # Hub → board → one card per player (trophy order)
         if not self._hub_ready:
             await self._ensure_ranked_hub()
             self._hub_ready = True
-        # Rebuild one card per tracked player after purge
+        if not self._boards_ready:
+            await self._refresh_boards({"legend", "electro"})
+            self._boards_ready = True
         day = legend_day_key()
         for bucket in ("legend", "electro"):
-            for player in await self.db.list_bucket(bucket, day):
+            players = await self.db.list_bucket(bucket, day)
+            players = sorted(
+                players,
+                key=lambda p: (p.trophies or 0, p.day_net or 0),
+                reverse=True,
+            )
+            for player in players:
                 await self._publish_player_log(player)
                 await asyncio.sleep(1.0)
+        await self._cleanup_pin_notices()
         self._ready_for_poll = True
         log.info("Rebuild finished — polls enabled")
 
+    async def _pin_quiet(self, message: discord.Message, *, reason: str) -> None:
+        try:
+            await message.pin(reason=reason)
+        except discord.HTTPException:
+            return
+        await asyncio.sleep(0.4)
+        try:
+            async for msg in message.channel.history(limit=8):
+                if msg.type == discord.MessageType.pins_add:
+                    try:
+                        await msg.delete()
+                    except discord.HTTPException:
+                        pass
+        except discord.HTTPException:
+            pass
+
+    async def _cleanup_pin_notices(self) -> None:
+        for bucket in ("legend", "electro"):
+            channel = self.channel_for(bucket)
+            if not channel:
+                continue
+            try:
+                async for msg in channel.history(limit=40):
+                    empty = not msg.content and not msg.embeds and not msg.attachments
+                    if msg.type == discord.MessageType.pins_add or empty:
+                        try:
+                            await msg.delete()
+                            await asyncio.sleep(0.25)
+                        except discord.HTTPException:
+                            pass
+            except discord.HTTPException:
+                pass
+
     async def _purge_spam_once(self) -> None:
-        """Delete old per-hit spam + duplicate cards; keep channels clean."""
-        flag = await self.db.get_meta("single_card_mode_v2")
+        """Wipe ranked channels once, then rebuild hub + board + one card/player."""
+        flag = await self.db.get_meta("single_card_mode_v3")
         if flag == "done":
             return
         log.info("Purging ranked channels for single-card mode…")
-        me = self.user.id if self.user else None
         for bucket in ("legend", "electro"):
             channel = self.channel_for(bucket)
-            if not channel or not me:
+            if not channel:
                 continue
             try:
                 async for pinned in channel.pins():
-                    if pinned.author.id == me:
-                        try:
-                            await pinned.unpin(reason="Single-card rebuild")
-                        except discord.HTTPException:
-                            pass
+                    try:
+                        await pinned.unpin(reason="Single-card rebuild")
+                    except discord.HTTPException:
+                        pass
             except discord.HTTPException:
                 pass
 
@@ -350,11 +388,9 @@ class LegendBot(commands.Bot):
             while True:
                 batch: list[discord.Message] = []
                 async for msg in channel.history(limit=100):
-                    if msg.author.id == me:
-                        batch.append(msg)
+                    batch.append(msg)
                 if not batch:
                     break
-                # Prefer bulk delete for young messages
                 young = [
                     m
                     for m in batch
@@ -392,11 +428,10 @@ class LegendBot(commands.Bot):
         await self.db.delete_meta_prefix("player_log_")
         await self.db.delete_meta_prefix("board_message_")
         await self.db.delete_meta_prefix("ranked_hub_")
-        await self.db.set_meta("single_card_mode_v2", "done")
+        await self.db.set_meta("single_card_mode_v3", "done")
         self._boards_ready = False
         self._hub_ready = False
         log.info("Single-card purge complete — rebuilding…")
-
     async def _ensure_channels(self, guild: discord.Guild) -> None:
         legend = None
         electro = None
@@ -463,10 +498,7 @@ class LegendBot(commands.Bot):
             try:
                 msg = await channel.send(embed=ranked_hub_embed())
                 await self.db.set_meta(meta_key, str(msg.id))
-                try:
-                    await msg.pin(reason="Ranked Hub")
-                except discord.HTTPException:
-                    pass
+                await self._pin_quiet(msg, reason="Ranked Hub")
             except discord.HTTPException as exc:
                 log.warning("Hub post failed in %s: %s", bucket, exc)
 
@@ -531,10 +563,7 @@ class LegendBot(commands.Bot):
                 else:
                     message = await channel.send(embed=embed, file=file)
                     await self.db.set_meta(meta_key, str(message.id))
-                    try:
-                        await message.pin(reason="Live ranked day board")
-                    except discord.HTTPException:
-                        pass
+                    await self._pin_quiet(message, reason="Live ranked day board")
             except discord.HTTPException as exc:
                 log.warning("Failed to update %s board: %s", bucket, exc)
 

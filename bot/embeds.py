@@ -116,9 +116,8 @@ def battle_log_embed(
     atk_n, def_n = len(attacks), len(defenses)
     atk_bar = progress_bar(atk_n, cap, width=8)
     def_bar = progress_bar(def_n, cap, width=8)
+    day_net = _fmt_net(player.day_net)
 
-    # Latest hit callout
-    latest = None
     if attacks or defenses:
         pool = list(attacks) + list(defenses)
         latest = max(pool, key=lambda b: b.battle_timestamp)
@@ -131,50 +130,56 @@ def battle_log_embed(
 
     if not player.season_active:
         description = (
-            f"# {player.name}\n"
             f"**{tier}** · Rank {rank}\n"
-            f"`{player.tag}`\n\n"
-            f"### 🏆 —\n"
-            f"⏳ Season not started — card stays ready"
+            f"`{player.tag}`\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"⏳ **Season not started** — card stays ready"
         )
-        atk_body = "▫ No attack performed\n`+0` 🏆"
-        def_body = "▫ No defense received"
+        atk_body = "▫ waiting…"
+        def_body = "▫ waiting…"
     else:
         description = (
-            f"# {player.name}\n"
             f"**{tier}** · Rank {rank}\n"
-            f"`{player.tag}`\n\n"
+            f"`{player.tag}`\n"
+            f"━━━━━━━━━━━━━━━━\n"
             f"### 🏆 {cups}\n"
-            f"**Day {_fmt_net(player.day_net)}** · {_hit_rate(attacks)}\n\n"
-            f"**Last hit**\n{latest_txt}"
+            f"**Day {day_net}** · {_hit_rate(attacks)}\n"
+            f"**Last** · {latest_txt}"
         )
         atk_body = _side_column(
-            attacks, empty="▫ No attack performed\n`+0` 🏆", cap=min(cap, 12)
+            attacks, empty="▫ No attacks yet", cap=min(cap, 10)
         )
         def_body = _side_column(
-            defenses, empty="▫ No defense received", cap=min(cap, 12)
+            defenses, empty="▫ No defenses yet", cap=min(cap, 10)
         )
 
     embed = discord.Embed(
-        title=None,
+        title=player.name,
         description=description,
         color=color,
         timestamp=now,
     )
     embed.add_field(
-        name=f"⚔️ Attacks  `{_fmt_net(offense_net)}` 🏆",
-        value=f"`{atk_bar}` **{atk_n}**\n{atk_body}",
+        name=f"⚔️ Offense `{_fmt_net(offense_net)}`",
+        value=f"`{atk_bar}` **{atk_n}/{cap}**\n{atk_body}",
         inline=True,
     )
     embed.add_field(
-        name=f"🛡️ Defenses  `{_fmt_net(defense_net)}` 🏆",
-        value=f"`{def_bar}` **{def_n}**\n{def_body}",
+        name=f"🛡️ Defense `{_fmt_net(defense_net)}`",
+        value=f"`{def_bar}` **{def_n}/{cap}**\n{def_body}",
         inline=True,
+    )
+    embed.add_field(
+        name="Day net",
+        value=f"**{day_net if player.season_active else '—'}** 🏆",
+        inline=False,
     )
     if badge_url:
         embed.set_thumbnail(url=badge_url)
-    embed.set_author(name="Nepali Legend's · Live Battle Log")
-    embed.set_footer(text=f"Updates in place · {day_key} · Refresh ↻")
+        embed.set_author(name="Nepali Legend's · Live Battle Log", icon_url=badge_url)
+    else:
+        embed.set_author(name="Nepali Legend's · Live Battle Log")
+    embed.set_footer(text=f"One card · edits in place · {day_key}")
     return embed
 
 
